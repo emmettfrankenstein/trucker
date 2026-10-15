@@ -22,14 +22,14 @@ This document covers how the app is tested: which assessment requirement each te
 
 | Layer | Command | What it covers |
 |---|---|---|
-| Backend unit + API | `cd backend && pytest --cov` | 116 tests, about 97% coverage. Domain rules, adapters (HTTP mocked with `respx`), API, auth, permissions, error format, query counts. |
+| Backend unit + API | `cd backend && pytest --cov` | 121 tests, about 97% coverage. Domain rules, adapters (HTTP mocked with `respx`), API, auth, permissions, error format, query counts. |
 | Frontend unit | `cd frontend && npm test` | Polyline decoding, route splitting, truck position, heatmap expressions, route card, error messages. |
 | End-to-end | `cd frontend && npm run e2e` | A real browser against the real Django API, with fake route and weather providers (`backend/tests/fakes.py`). Covers planning, the unsafe-trip banner, route switching, popups, heatmap play and toggle, reloading a trip link, validation, autocomplete, and sign up → history → delete → sign out. Also a smoke run at phone size. |
 | Static checks | `ruff`, `eslint`, `prettier --check`, `makemigrations --check` | Style, likely bugs, and missing migrations. |
 
 The fake providers put a 50 mph wind storm north of latitude 41.4°. That makes the results deterministic: Dallas → Atlanta is calm, and Chicago → Minneapolis is No Travel at a 36,000 lb load.
 
-## 3. Live checklist (deployed app, real TomTom and Open-Meteo)
+## 3. Live checklist (deployed app, real TomTom and weather services)
 
 Open the API health check first, because the free server takes about a minute to wake up. Time each plan request; a long trip should still finish in a few seconds once the server is awake.
 
@@ -40,7 +40,7 @@ Open the API health check first, because the free server takes about a minute to
 | L3 | Long trip | Seattle → Miami | Completes; checkpoints and heatmap still load; slider stays smooth |
 | L4 | Intervals | Plan the same trip at 10, 25 and 50 mi | Checkpoint count goes down by roughly 2.5× and then 2× |
 | L5 | ETA sanity | Look at the first and last checkpoint ETAs | First = departure; last ≈ departure + route duration |
-| L6 | Weather truth | Pick one checkpoint, then check open-meteo.com or weather.gov at that place and hour | Wind, rain and snow match to within rounding |
+| L6 | Weather truth | Pick one checkpoint, then check forecast.weather.gov at that place and hour | Wind, rain and snow match to within rounding |
 | L7 | Load sensitivity | Find a windy day (wind ≥ 35 mph). Plan at 20,000 lb, then at 45,000 lb | The heavier load raises High to Severe (35–44 mph) or Severe to No Travel (45–54 mph) |
 | L8 | Recommendation logic | Read the explanation and compare the route cards | The ranking matches Severe → High → average risk → time |
 | L9 | Bad input | Same origin and destination; departure in the past; departure 8 days out; load 0 | A clear inline or API error, and no crash |
@@ -53,12 +53,13 @@ Open the API health check first, because the free server takes about a minute to
 | L16 | Auth | Sign up, plan, reload, sign out, sign in, check history; open your trip link in a private window | History persists. The signed-in trip is private (404 when signed out); anonymous trip links are shareable |
 | L17 | Session expiry | Stay signed in for more than 30 minutes, then plan | Still works: the token refreshes silently |
 | L18 | Rate limit | Plan more than 30 trips in an hour | A clear "too many requests" message |
-| L18b | Weather quota | Plan Anchorage → Montreal at 10 mi, then plan two more long trips within the same minute | All succeed. Once Open-Meteo's quota is used up, weather comes from MET Norway (the API log shows "trying the next weather source") |
+| L18b | Weather quota | Plan Anchorage → Montreal at 10 mi, then plan two more long trips within the same minute | All succeed. US checkpoints come from NWS and Canadian ones from MET Norway (the API log shows "covered N of M points") |
 | L19 | Devices | Phone (portrait), tablet, Chrome, Firefox, Safari | Layout fits; the map and controls are usable |
 
 ## 4. Known limitations
 
-- The free Open-Meteo tier allows about 600 locations a minute, 5,000 an hour and 10,000 a day, counted per IP. Very long trips use a coarser weather lattice, cached locations are free, MET Norway takes over when the quota runs out, and a paid key (`OPEN_METEO_API_KEY`) removes the limits.
+- NWS gives precipitation and snowfall only about 3 days ahead; beyond that those read as zero, while wind continues to about 7 days.
+- The free Open-Meteo tier (last resort) allows about 600 locations a minute, 5,000 an hour and 10,000 a day, counted per IP. Very long trips use a coarser weather lattice, cached locations are free, MET Norway takes over when the quota runs out, and a paid key (`OPEN_METEO_API_KEY`) removes the limits.
 - MET Norway, the backup source, reports precipitation without splitting rain from snow, so at or below 1 °C it counts as snow. It has hourly steps for about 2.5 days, then 6-hourly.
 
 - The heatmap covers 48 hours from departure. On a trip longer than that, checkpoints still get their own ETA forecasts, but the slider stops at +48 h.

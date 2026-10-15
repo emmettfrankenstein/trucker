@@ -10,6 +10,7 @@ from django.core.cache import cache
 from providers.base import ProviderError
 from providers.fallback import FallbackWeather
 from providers.metno import MetNoWeather, parse_forecast
+from providers.nws import NwsWeather, parse_grid
 from providers.openmeteo import OpenMeteoWeather, _window, choose_lattice, parse_location
 from providers.tomtom import TomTomGeocoding, TomTomRouting, parse_places, parse_routes
 
@@ -301,8 +302,12 @@ def test_met_no_snaps_fetches_each_location_once_and_caches():
     assert api.call_count == 2
 
 
+OM_THEN_MET = ["providers.openmeteo.OpenMeteoWeather", "providers.metno.MetNoWeather"]
+
+
 @respx.mock
-def test_fallback_uses_met_no_when_open_meteo_is_out_of_quota():
+def test_fallback_uses_met_no_when_open_meteo_is_out_of_quota(settings):
+    settings.WEATHER_PROVIDER_CHAIN = OM_THEN_MET
     om = respx.get("https://api.open-meteo.com/v1/forecast").mock(
         return_value=httpx.Response(429, json={"error": True, "reason": "Daily API request limit exceeded"})
     )
@@ -317,7 +322,8 @@ def test_fallback_uses_met_no_when_open_meteo_is_out_of_quota():
 
 
 @respx.mock
-def test_fallback_does_not_mask_bad_input():
+def test_fallback_does_not_mask_bad_input(settings):
+    settings.WEATHER_PROVIDER_CHAIN = OM_THEN_MET
     start = datetime.now(UTC) + timedelta(days=20)
     met = respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(side_effect=_met_response)
     with pytest.raises(ProviderError) as exc:
@@ -327,10 +333,105 @@ def test_fallback_does_not_mask_bad_input():
 
 
 @respx.mock
-def test_fallback_reports_the_first_error_when_every_source_fails():
+def test_fallback_reports_the_first_error_when_every_source_fails(settings):
+    settings.WEATHER_PROVIDER_CHAIN = OM_THEN_MET
     respx.get("https://api.open-meteo.com/v1/forecast").mock(return_value=httpx.Response(429, json={}))
     respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(return_value=httpx.Response(503))
     start = datetime.now(UTC) + timedelta(hours=1)
     with pytest.raises(ProviderError) as exc:
         FallbackWeather().hourly([(41, -88)], start, start + timedelta(hours=1))
     assert "Open-Meteo" in str(exc.value)
+
+
+def _iso(t):
+    return datetime.fromtimestamp(t, UTC).isoformat()
+
+
+def _grid(t0, wind_kmh=40.0):
+    return {
+        "properties": {
+            "windSpeed": {"uom": "wmoUnit:km_h-1", "values": [{"validTime": f"{_iso(t0)}/PT2H", "value": wind_kmh}]},
+            "windGust": {"uom": "wmoUnit:km_h-1", "values": [{"validTime": f"{_iso(t0)}/PT1H", "value": 80.0}]},
+            "quantitativePrecipitation": {
+                "uom": "wmoUnit:mm",
+                "values": [{"validTime": f"{_iso(t0)}/PT2H", "value": 10.16}],
+            },
+            "snowfallAmount": {"uom": "wmoUnit:mm", "values": [{"validTime": f"{_iso(t0)}/PT2H", "value": 25.4}]},
+        }
+    }
+
+
+def test_nws_grid_expands_periods_converts_units_and_splits_snow():
+    s = parse_grid(_grid(0)["properties"])
+    assert s.times == [0.0, 3600.0]  # a PT2H value covers two hours
+    assert s.wind_mph[1] == pytest.approx(24.85, abs=0.01)
+    assert s.gust_mph == [pytest.approx(49.71, abs=0.01), s.wind_mph[1]]  # never below sustained
+    assert s.snow_in_hr[0] == pytest.approx(0.5)  # 25.4 mm over 2 h
+    # 5.08 mm/h of liquid, of which 1.27 mm/h is the snow's water at 10:1
+    assert s.rain_in_hr[0] == pytest.approx((5.08 - 1.27) / 25.4)
+    assert parse_grid({"windSpeed": {"values": []}}) is None
+
+
+def _nws_routes(t0):
+    respx.get(url__regex=r"https://api\.weather\.gov/points/4\d.*").mock(
+        side_effect=lambda r: httpx.Response(
+            200, json={"properties": {"forecastGridData": "https://api.weather.gov/gridpoints/LOT/1,1"}}
+        )
+    )
+    respx.get(url__regex=r"https://api\.weather\.gov/points/5\d.*").mock(
+        return_value=httpx.Response(404, json={"title": "Data Unavailable For Requested Point"})
+    )
+    return respx.get("https://api.weather.gov/gridpoints/LOT/1,1").mock(
+        return_value=httpx.Response(200, json=_grid(t0))
+    )
+
+
+@respx.mock
+def test_nws_shares_grid_cells_skips_points_outside_the_us_and_caches():
+    start = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    grid = _nws_routes(int(start.timestamp()))
+    pts = [(41.8, -87.6), (41.9, -87.7), (55.0, -100.0)]
+    series = NwsWeather().hourly(pts, start, start + timedelta(hours=2))
+    assert series[0] is series[1]
+    assert series[2] is None
+    assert grid.call_count == 1
+    assert respx.calls.call_count == 4
+    assert respx.calls[0].request.url.path == "/points/41.8,-87.6"  # canonical, no trailing zeros
+    NwsWeather().hourly(pts, start, start + timedelta(hours=2))
+    assert respx.calls.call_count == 4  # points, outside-US marker and grid all cached
+
+
+@respx.mock
+def test_nws_grid_failure_leaves_points_for_the_next_source():
+    respx.get(url__regex=r"https://api\.weather\.gov/points/.*").mock(
+        return_value=httpx.Response(
+            200, json={"properties": {"forecastGridData": "https://api.weather.gov/gridpoints/X/1,1"}}
+        )
+    )
+    respx.get("https://api.weather.gov/gridpoints/X/1,1").mock(return_value=httpx.Response(400, json={}))
+    start = datetime.now(UTC)
+    assert NwsWeather().hourly([(41.8, -87.6)], start, start + timedelta(hours=2)) == [None]
+
+
+@respx.mock
+def test_default_chain_mixes_nws_in_the_us_with_met_no_elsewhere():
+    start = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    _nws_routes(int(start.timestamp()))
+    met = respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(side_effect=_met_response)
+    om = respx.get("https://api.open-meteo.com/v1/forecast").mock(side_effect=_hourly_response)
+    series = FallbackWeather().hourly([(41.8, -87.6), (55.0, -100.0)], start, start + timedelta(hours=2))
+    assert series[0].wind_mph[0] == pytest.approx(24.85, abs=0.01)  # NWS
+    assert series[1].wind_mph[0] == pytest.approx(22.37, abs=0.01)  # MET Norway
+    assert met.call_count == 1
+    assert om.call_count == 0
+
+
+@respx.mock
+def test_open_meteo_is_the_last_resort():
+    respx.get(url__regex=r"https://api\.weather\.gov/.*").mock(return_value=httpx.Response(503))
+    respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(return_value=httpx.Response(429))
+    om = respx.get("https://api.open-meteo.com/v1/forecast").mock(side_effect=_hourly_response)
+    start = datetime.now(UTC) + timedelta(hours=1)
+    series = FallbackWeather().hourly([(41.8, -87.6)], start, start + timedelta(hours=2))
+    assert series[0] is not None
+    assert om.call_count == 1

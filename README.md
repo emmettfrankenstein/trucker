@@ -23,8 +23,9 @@ flowchart LR
   S --> D[domain/*<br/>pure Python: risk, sampling,<br/>recommendation, grid]
   S --> P[providers/*<br/>adapters]
   P --> TT[TomTom<br/>truck routing + search]
-  P --> OM[Open-Meteo<br/>hourly forecast]
-  P -. backup .-> MET[MET Norway<br/>forecast]
+  P --> NWS[NWS api.weather.gov<br/>US forecast]
+  P -. outside US / backup .-> MET[MET Norway<br/>forecast]
+  P -. last resort .-> OM[Open-Meteo<br/>hourly forecast]
   P <--> R[(Redis cache)]
   S <--> DB[(PostgreSQL)]
 ```
@@ -36,19 +37,17 @@ The backend has three layers, and each one only depends on the layer below it:
 | **HTTP** | `trips/views.py`, `accounts/views.py`, `*/urls.py`, `*/serializers.py` | Thin function-based views (`@api_view`): validate with a serializer, call a service, serialize the result. |
 | **Use-cases** | `trips/services.py` | `plan_trip()` and `build_heatmap()` coordinate the providers and the domain logic, then save the results. |
 | **Domain** | `trips/domain/` | Pure functions with no Django imports, so the rules can be unit-tested exhaustively. |
-| **Adapters** | `providers/` | TomTom and Open-Meteo sit behind `RoutingProvider`, `GeocodingProvider` and `WeatherProvider` protocols. They are chosen in settings, so swapping a vendor or using a test fake means editing one setting. |
+| **Adapters** | `providers/` | TomTom and the weather services sit behind `RoutingProvider`, `GeocodingProvider` and `WeatherProvider` protocols. They are chosen in settings, so swapping a vendor or using a test fake means editing one setting. |
 
 ### What happens when you plan a trip
 
 1. **Routes.** One TomTom call (`travelMode=truck`, `vehicleWeight`, `maxAlternatives=2`). TomTom sometimes returns fewer than 3 routes, especially on short trips. When it does, the backend pushes via-points out to either side of the main route and requests detours through them, in parallel. It drops any detour that overlaps an existing route by 85% or more, or that takes 60% longer than the fastest route (`domain/alternatives.py`).
 2. **Checkpoints.** One is placed every N miles plus the destination. ETAs are interpolated on TomTom's own turn-by-turn **distance-to-time pairs**, not an average speed, so slow city stretches get realistic arrival times (`domain/sampling.py`).
-3. **Weather.** All checkpoints on all routes go to Open-Meteo in **one batched request**, cached per location for 30 minutes. Each value is linearly interpolated between the two forecast hours either side of the ETA.
-   - **Staying inside the free tier.** Open-Meteo's free tier counts every location as one call and allows about 600 calls a minute.
-   - Lookups snap to a 0.1° lattice, which is about the forecast models' own resolution, so routes that share a road share a lookup.
-   - For very long trips the lattice coarsens until one plan needs at most 300 locations; for example, Anchorage → Montreal at 10-mile spacing.
-   - Shared minute, hour and day budgets (580 / 4,800 / 9,500 locations) refuse a request up front rather than spending quota on calls that would be refused.
-   - **Backup source.** Open-Meteo counts its free quota per IP, and Render's outbound IPs are shared with other apps, so the quota can run out without this app using it. When Open-Meteo refuses, weather comes from [MET Norway](https://api.met.no/) instead (free, keyless, limited per app rather than per IP), and Open-Meteo is skipped until its quota resets (`providers/fallback.py`). MET Norway doesn't split rain from snow, so precipitation at or below 1 °C counts as snow.
-   - Setting `OPEN_METEO_API_KEY` switches to the paid endpoint and removes these limits.
+3. **Weather.** All checkpoints on all routes are looked up together, from three free, keyless sources in order (`providers/fallback.py`). Each source fills the checkpoints it can, and the next one fills the rest. Each value is linearly interpolated between the two forecast steps either side of the ETA.
+   - **NWS (api.weather.gov), primary for the US.** `/points` finds the forecast office grid cell for a location (cached for 30 days), and that cell's grid data gives wind, gusts, liquid precipitation and snowfall. Nearby checkpoints share a cell, and each cell's forecast is cached for 30 minutes. Snow's water (10:1) is taken out of the precipitation so it isn't counted again as rain (`providers/nws.py`).
+   - **MET Norway, backup and outside the US.** Global, and limited per app rather than per IP. It covers Canada and Mexico, and anything NWS fails on. It doesn't split rain from snow, so precipitation at or below 1 °C counts as snow (`providers/metno.py`).
+   - **Open-Meteo, last resort.** It's fast and batches hundreds of locations per request, but its free quota is counted per IP, and Render's outbound IPs are shared with other apps, so it was refusing even short trips. It keeps minute, hour and day budgets, and is skipped until its quota resets once it refuses (`providers/openmeteo.py`).
+   - A source that is down or rate-limited is skipped, so a plan only fails if all three fail. Lookups snap to a lattice that coarsens on long trips, which keeps each plan to about 120 lookups.
 4. **Risk.** Each checkpoint is classified by the table-driven rules (`domain/risk.py`) and gets human-readable reasons.
 5. **Recommendation.** Routes are sorted on `(No Travel miles, Severe miles, High miles, avg risk, duration)`. The response includes a sentence explaining the choice (`domain/recommend.py`).
 6. **Saving.** The trip, its routes and checkpoints are saved in one transaction with `bulk_create`. The detail endpoint prefetches everything, so loading a trip takes **3 queries regardless of size** (a test enforces this).
@@ -77,7 +76,7 @@ The brief leaves a few points open. Each one below is decided explicitly and cov
 | **"Severe miles"** | Each checkpoint covers the road halfway to its neighbours on either side. Those spans add up exactly to the route length. | This turns point samples into miles without double-counting. |
 | **Average risk** | Distance-weighted mean of levels 0 to 4. | Checkpoints are evenly spaced except the last one, so a plain mean would over-count it. |
 | **Wind** | Uses **sustained** 10 m wind, since the table is in mph without mentioning gusts. Gusts are shown in popups. Set `RISK_WIND_FIELD=gust` to classify on gusts instead. | |
-| **Rain** | Open-Meteo `rain + showers`, in inches per hour. | Showers are reported separately from frontal rain. |
+| **Rain** | Liquid precipitation in inches per hour, with snow's water taken out (NWS), or `rain + showers` (Open-Meteo). | Snow is scored on its own, so its water shouldn't also count as rain. |
 | **Departure window** | From now (with 1 hour of slack) up to 7 days ahead. | Forecast quality drops off sharply after a week. |
 
 ---
@@ -107,7 +106,7 @@ Planning works without an account, so a reviewer can try the app straight away. 
 
 ## Running locally
 
-**Prerequisites:** Python 3.12+, Node 20+, and a free [TomTom API key](https://developer.tomtom.com/). Open-Meteo needs no key.
+**Prerequisites:** Python 3.12+, Node 20+, and a free [TomTom API key](https://developer.tomtom.com/). The weather services need no key.
 
 ```bash
 cp .env.example .env          # then put your TOMTOM_API_KEY in .env
@@ -134,7 +133,7 @@ Demo account: `python manage.py ensure_demo_user --password <choose one>`
 See [docs/TESTING.md](docs/TESTING.md) for the requirement-to-test map and the live checklist.
 
 ```bash
-cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 116 tests, ~97% coverage
+cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 121 tests, ~97% coverage
 cd frontend && npm test && npm run lint && npm run format:check && npm run e2e   # e2e uses fake providers
 ```
 
@@ -173,7 +172,7 @@ backend/
     services.py      plan_trip(), build_heatmap()
     models.py        Trip → Route → Checkpoint
     serializers.py · views.py · urls.py · admin.py
-  providers/         base.py (protocols) · tomtom.py · openmeteo.py · metno.py · fallback.py · http.py
+  providers/         base.py (protocols) · tomtom.py · openmeteo.py · metno.py · nws.py · fallback.py · http.py
   tests/             unit, adapter and API tests, fakes, fixtures
 frontend/
   src/api            axios client (JWT refresh, one request at a time), endpoints

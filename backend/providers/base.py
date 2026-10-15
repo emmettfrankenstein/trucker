@@ -15,9 +15,12 @@ from trips.domain.weather import HourlySeries
 class ProviderError(Exception):
     """An upstream API failed or returned something we cannot use."""
 
-    def __init__(self, message: str, *, status: int = 502, retry_after: int | None = None):
+    def __init__(
+        self, message: str, *, status: int = 502, retry_after: int | None = None, upstream_status: int | None = None
+    ):
         super().__init__(message)
         self.status = status
+        self.upstream_status = upstream_status  # the vendor's own HTTP status, when there was one
         self.retry_after = retry_after  # seconds until a rate-limited service may work again
 
     @property
@@ -64,4 +67,6 @@ class GeocodingProvider(Protocol):
 
 
 class WeatherProvider(Protocol):
-    def hourly(self, points: Sequence[LatLon], start: datetime, end: datetime) -> list[HourlySeries]: ...
+    def hourly(self, points: Sequence[LatLon], start: datetime, end: datetime) -> list[HourlySeries | None]:
+        """One series per point, or None where this provider has no coverage (e.g. NWS outside the US)."""
+        ...

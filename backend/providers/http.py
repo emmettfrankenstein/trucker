@@ -20,6 +20,7 @@ def client() -> httpx.Client:
         _client = httpx.Client(
             timeout=httpx.Timeout(15.0, connect=5.0),
             transport=httpx.HTTPTransport(retries=2),
+            follow_redirects=True,  # NWS redirects /points to its canonical coordinates
             # MET Norway's terms ask for an identifying User-Agent with a contact.
             headers={"User-Agent": "trucker-weather-routing/1.0 github.com/emmettfrankenstein/trucker"},
         )
@@ -46,6 +47,7 @@ def get_json(url: str, params: dict, *, service: str, retries: int = 2):
                 f"{service} is rate-limiting requests right now. Please try again in about a minute.",
                 status=503,
                 retry_after=_retry_after(resp, reason),
+                upstream_status=429,
             )
         if resp.status_code in (500, 502, 503, 504) and attempt < retries:
             time.sleep(0.5 * 2**attempt)
@@ -53,7 +55,11 @@ def get_json(url: str, params: dict, *, service: str, retries: int = 2):
         if resp.status_code >= 400:
             detail = _reason(resp)
             status = 400 if resp.status_code == 400 else 502
-            raise ProviderError(f"{service} error {resp.status_code}: {detail}".strip(": "), status=status)
+            raise ProviderError(
+                f"{service} error {resp.status_code}: {detail}".strip(": "),
+                status=status,
+                upstream_status=resp.status_code,
+            )
         return resp.json()
     raise ProviderError(f"{service} failed")  # pragma: no cover
 

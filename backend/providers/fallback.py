@@ -1,7 +1,8 @@
-"""Weather from the first provider in WEATHER_PROVIDER_CHAIN that is available.
+"""Weather from the providers in WEATHER_PROVIDER_CHAIN, in order.
 
-A provider that is out of quota is skipped until its quota resets, so a busy hour costs one
-refused request rather than one per trip.
+Each provider fills the points it can; the next one fills the rest (NWS covers only the US,
+so a trip into Canada mixes sources). A provider that is down or out of quota is skipped,
+until its quota resets when it says when that is.
 """
 
 from __future__ import annotations
@@ -24,13 +25,17 @@ logger = logging.getLogger(__name__)
 
 class FallbackWeather:
     def hourly(self, points: Sequence[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
+        result: list[HourlySeries | None] = [None] * len(points)
+        todo = list(range(len(points)))
         error: ProviderError | None = None
         for path in settings.WEATHER_PROVIDER_CHAIN:
+            if not todo:
+                break
             resting = f"weather:resting:{path}"
             if cache.get(resting):
                 continue
             try:
-                return import_string(path)().hourly(points, start, end)
+                got = import_string(path)().hourly([points[i] for i in todo], start, end)
             except ProviderError as exc:
                 if not exc.unavailable:
                     raise
@@ -38,6 +43,15 @@ class FallbackWeather:
                 if exc.retry_after:
                     cache.set(resting, True, timeout=exc.retry_after)
                 error = error or exc
+                continue
+            for i, series in zip(todo, got):
+                result[i] = series
+            left = [i for i in todo if result[i] is None]
+            if left:
+                logger.info("%s covered %d of %d points", path, len(todo) - len(left), len(todo))
+            todo = left
+        if not todo:
+            return result
         raise error or ProviderError(
             "Weather forecasts are unavailable right now. Please try again in a few minutes.", status=503
         )

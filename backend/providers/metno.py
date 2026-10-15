@@ -32,8 +32,9 @@ SNOW_CM_PER_MM = 0.7
 SNOW_MAX_TEMP_C = 1.0
 
 
-def parse_forecast(payload: dict, start: datetime, end: datetime) -> HourlySeries:
-    lo, hi = (start - timedelta(hours=6)).timestamp(), (end + timedelta(hours=6)).timestamp()
+def parse_forecast(payload: dict, start: datetime | None = None, end: datetime | None = None) -> HourlySeries:
+    lo = (start - timedelta(hours=6)).timestamp() if start else float("-inf")
+    hi = (end + timedelta(hours=6)).timestamp() if end else float("inf")
     times, wind, gust, rain, snow = [], [], [], [], []
     for step in payload["properties"]["timeseries"]:
         t = datetime.fromisoformat(step["time"].replace("Z", "+00:00")).timestamp()
@@ -66,16 +67,15 @@ class MetNoWeather:
         unique = list(dict.fromkeys(snapped))
         keys = {p: f"metno:{p[0]:.3f}:{p[1]:.3f}" for p in unique}
         cached = cache.get_many(list(keys.values()))
-        raw = {p: cached[k] for p, k in keys.items() if k in cached}
+        series = {p: cached[k] for p, k in keys.items() if k in cached}
 
-        missing = [p for p in unique if p not in raw]
+        missing = [p for p in unique if p not in series]
         if missing:
             with ThreadPoolExecutor(max_workers=settings.MET_NO_WORKERS) as pool:
                 fetched = list(pool.map(self._fetch, missing))
-            raw.update(zip(missing, fetched))
-            cache.set_many({keys[p]: raw[p] for p in missing}, timeout=settings.WEATHER_CACHE_SECONDS)
-
-        series = {p: parse_forecast(raw[p], start, end) for p in unique}
+            # The whole forecast is cached parsed (a few KB), not raw, so any window reuses it.
+            series.update((p, parse_forecast(raw)) for p, raw in zip(missing, fetched))
+            cache.set_many({keys[p]: series[p] for p in missing}, timeout=settings.WEATHER_CACHE_SECONDS)
         return [series[p] for p in snapped]
 
     @staticmethod

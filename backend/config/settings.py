@@ -151,12 +151,15 @@ OPEN_METEO_API_KEY = env("OPEN_METEO_API_KEY", default="")
 OPEN_METEO_LOCATIONS_PER_MINUTE = env.int("OPEN_METEO_LOCATIONS_PER_MINUTE", default=580)
 OPEN_METEO_LOCATIONS_PER_HOUR = env.int("OPEN_METEO_LOCATIONS_PER_HOUR", default=4800)
 OPEN_METEO_LOCATIONS_PER_DAY = env.int("OPEN_METEO_LOCATIONS_PER_DAY", default=9500)
-# When Open-Meteo is out of quota (its free tier is counted per IP, and Render's outbound
-# IPs are shared), weather comes from the next provider in this list instead.
+# Weather sources in order; each fills the points the ones before it could not. NWS covers
+# the US only; MET Norway is global; Open-Meteo is a last resort because its free quota is
+# counted per IP and Render's outbound IPs are shared with other apps.
 WEATHER_PROVIDER_CHAIN = env.list(
     "WEATHER_PROVIDER_CHAIN",
-    default=["providers.openmeteo.OpenMeteoWeather", "providers.metno.MetNoWeather"],
+    default=["providers.nws.NwsWeather", "providers.metno.MetNoWeather", "providers.openmeteo.OpenMeteoWeather"],
 )
+NWS_MAX_LOCATIONS = env.int("NWS_MAX_LOCATIONS", default=120)
+NWS_WORKERS = env.int("NWS_WORKERS", default=8)
 MET_NO_MAX_LOCATIONS = env.int("MET_NO_MAX_LOCATIONS", default=120)
 MET_NO_WORKERS = env.int("MET_NO_WORKERS", default=6)
 OPEN_METEO_MAX_LOCATIONS_PER_REQUEST = env.int("OPEN_METEO_MAX_LOCATIONS_PER_REQUEST", default=300)
