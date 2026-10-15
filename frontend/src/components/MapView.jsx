@@ -263,10 +263,11 @@ function MapView({
             type="circle"
             filter={cpFilter}
             paint={{
-              'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 4, 10, 8],
+              // Small at country scale so 10-mile checkpoints don't merge into a chain.
+              'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 2.5, 8, 5, 12, 8],
               'circle-color': ['get', 'color'],
               'circle-stroke-color': '#fff',
-              'circle-stroke-width': 2,
+              'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 4, 1, 10, 2],
             }}
           />
         </Source>

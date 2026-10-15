@@ -89,14 +89,19 @@ _CRITERIA = (
 
 
 def _why(best: RouteMetrics, other: RouteMetrics) -> str:
+    """One clause saying which criterion beat ``other``, plus the time trade-off."""
     bk, ok = best.sort_key(), other.sort_key()
+    delta = other.duration_s - best.duration_s
     for idx, (attr, label) in enumerate(_CRITERIA):
         if bk[idx] < ok[idx]:
             b, o = getattr(best, attr), getattr(other, attr)
             fmt = "{:.2f}" if attr == "avg_risk" else "{:.0f}"
-            return f"{label}: {fmt.format(b)} vs {fmt.format(o)} on Route {other.key}"
-    delta = other.duration_s - best.duration_s
-    return f"same weather risk as Route {other.key} but {_fmt_minutes(delta)} faster"
+            adjective = "lower" if attr == "avg_risk" else "fewer"
+            clause = f"{adjective} {label} than Route {other.key} ({fmt.format(b)} vs {fmt.format(o)})"
+            if delta < -60:
+                clause += f", though {_fmt_minutes(delta)} longer"
+            return clause
+    return f"same weather risk as Route {other.key} and {_fmt_minutes(delta)} faster"
 
 
 def recommend(metrics: Sequence[RouteMetrics]) -> Recommendation:
@@ -113,7 +118,7 @@ def recommend(metrics: Sequence[RouteMetrics]) -> Recommendation:
             f"({best.no_travel_miles:.0f} mi). Consider a later departure."
         )
     elif parts:
-        explanation = f"Route {best.key} is recommended. " + "; ".join(parts) + "."
+        explanation = f"Route {best.key} is recommended: " + "; ".join(parts) + "."
     else:
         explanation = f"Route {best.key} is the only route available."
     return Recommendation(

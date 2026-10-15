@@ -120,7 +120,7 @@ function HeatmapControls({
           </Stack>
           <Stack direction="row" justifyContent="space-between" alignItems="baseline">
             <Typography variant="body2">
-              <b>{time.format('ddd MMM D, h:00 A')}</b>{' '}
+              <b>{time.format('ddd MMM D, h:mm A')}</b>{' '}
               <Typography component="span" variant="caption" color="text.secondary">
                 (+{hour}h from departure)
               </Typography>

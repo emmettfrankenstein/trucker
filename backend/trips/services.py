@@ -237,7 +237,9 @@ def build_heatmap(trip: Trip) -> dict:
         return trip.heatmap
     routes = [decode_polyline(r.geometry) for r in trip.routes.all()]
     grid = corridor_grid(routes, buffer_mi=settings.HEATMAP_BUFFER_MI, max_cells=settings.HEATMAP_MAX_CELLS)
-    start = trip.departure_at.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    # Frame 0 is the departure instant itself, so "+N h" on the slider means N hours after
+    # the truck leaves; values between forecast hours are interpolated.
+    start = trip.departure_at.astimezone(UTC).replace(second=0, microsecond=0)
     hours = settings.HEATMAP_HOURS
     series = providers.weather().hourly(grid.cells, start, start + timedelta(hours=hours))
 

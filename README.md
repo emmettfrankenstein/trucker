@@ -124,9 +124,11 @@ Demo account: `python manage.py ensure_demo_user --password <choose one>`
 
 ### Tests and quality checks
 
+See [docs/TESTING.md](docs/TESTING.md) for the requirement-to-test map and the live checklist.
+
 ```bash
 cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 103 tests, ~97% coverage
-cd frontend && npm test && npm run lint && npm run format:check
+cd frontend && npm test && npm run lint && npm run format:check && npm run e2e   # e2e uses fake providers
 ```
 
 - **Backend tests:**

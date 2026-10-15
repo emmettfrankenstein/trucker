@@ -6,6 +6,10 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 export default [
   { ignores: ['dist'] },
   {
+    files: ['playwright.config.js', 'vite.config.js', 'e2e/**'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
     files: ['**/*.test.{js,jsx}', 'src/test/**'],
     languageOptions: { globals: { ...globals.browser, vi: 'readonly', test: 'readonly', expect: 'readonly' } },
   },

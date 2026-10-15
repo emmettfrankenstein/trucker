@@ -41,7 +41,7 @@ def test_then_shortest_time():
     b = route("B", 3600, (100, L))
     rec = recommend([a, b])
     assert rec.recommended == "B"
-    assert "1 h 0 min faster" in rec.explanation
+    assert rec.explanation == "Route B is recommended: same weather risk as Route A and 1 h 0 min faster."
 
 
 def test_no_travel_ranks_worse_than_severe():
@@ -62,7 +62,9 @@ def test_all_routes_no_travel_is_flagged_unsafe():
 def test_explanation_names_the_deciding_criterion():
     a = route("A", 3600, (90, L), (10, S))
     b = route("B", 4000, (100, L))
-    assert "Severe miles: 0 vs 10 on Route A" in recommend([a, b]).explanation
+    assert recommend([a, b]).explanation == (
+        "Route B is recommended: fewer Severe miles than Route A (0 vs 10), though 7 min longer."
+    )
 
 
 def test_requires_routes():

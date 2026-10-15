@@ -7,6 +7,10 @@ export default defineConfig({
     port: 5173,
     proxy: { '/api': 'http://localhost:8000' },
   },
+  preview: {
+    port: 4173,
+    proxy: { '/api': 'http://localhost:8000' },
+  },
   build: {
     // MapLibre alone is ~800 kB minified; it is split into its own long-cached chunk.
     chunkSizeWarningLimit: 900,
@@ -21,5 +25,6 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.js',
+    include: ['src/**/*.test.{js,jsx}'],
   },
 })
