@@ -1,0 +1,11 @@
+{
+  "summary": {"query": "chicago", "numResults": 2},
+  "results": [
+    {"type": "Geography", "address": {"freeformAddress": "Chicago, IL", "municipality": "Chicago"},
+     "position": {"lat": 41.88425, "lon": -87.63245}},
+    {"type": "POI", "poi": {"name": "Chicago Midway Airport"},
+     "address": {"freeformAddress": "5700 S Cicero Ave, Chicago, IL 60638"},
+     "position": {"lat": 41.78598, "lon": -87.75242}},
+    {"type": "Street", "address": {}, "position": {"lat": 1, "lon": 2}}
+  ]
+}
