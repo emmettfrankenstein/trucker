@@ -10,7 +10,7 @@ Trucker helps a driver choose the safest route. You enter an origin, a destinati
 - **recommends a route**: fewest Severe miles first, then fewest High miles, then lowest average risk, then shortest time;
 - draws everything on a **map**: routes coloured by risk, checkpoints with popups, and a **0–48 h weather heatmap** with a slider and a play button.
 
-**Live app:** https://trucker-pink.vercel.app · **API docs:** https://trucker-api-vxmt.onrender.com/api/docs/ · **Walkthrough:** _add Loom link_
+**Live app:** https://trucker-pink.vercel.app · **API docs:** https://trucker-api-vxmt.onrender.com/api/docs/ · **Walkthrough (Loom):** https://www.loom.com/share/875ee3a948774e88b1e8401c000f146e
 
 ---
 
