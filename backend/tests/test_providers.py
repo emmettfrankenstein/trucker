@@ -8,6 +8,8 @@ import respx
 from django.core.cache import cache
 
 from providers.base import ProviderError
+from providers.fallback import FallbackWeather
+from providers.metno import MetNoWeather, parse_forecast
 from providers.openmeteo import OpenMeteoWeather, _window, choose_lattice, parse_location
 from providers.tomtom import TomTomGeocoding, TomTomRouting, parse_places, parse_routes
 
@@ -186,7 +188,8 @@ def test_minute_budget_refuses_before_calling(settings):
     with pytest.raises(ProviderError) as exc:
         OpenMeteoWeather().hourly([(41.0, -100.0 + i) for i in range(100)], start, start + timedelta(hours=2))
     assert exc.value.status == 503
-    assert "per-minute limit" in str(exc.value)
+    assert "usage limit" in str(exc.value)
+    assert 0 < exc.value.retry_after <= 60
     assert api.call_count == 1
     # Cached locations cost nothing, so repeating the first trip still works.
     OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(100)], start, start + timedelta(hours=2))
@@ -212,3 +215,122 @@ def test_api_key_uses_commercial_endpoint_without_budget(settings):
     start = datetime.now(UTC) + timedelta(hours=1)
     OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(5)], start, start + timedelta(hours=2))
     assert api.calls.last.request.url.params["apikey"] == "paid"
+
+
+@respx.mock
+def test_hourly_quota_reports_when_it_resets():
+    respx.get("https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(429, json={"error": True, "reason": "Hourly API request limit exceeded"})
+    )
+    start = datetime.now(UTC) + timedelta(hours=1)
+    with pytest.raises(ProviderError) as exc:
+        OpenMeteoWeather().hourly([(40.0, -100.0)], start, start + timedelta(hours=2))
+    assert 0 < exc.value.retry_after <= 3600
+
+
+@respx.mock
+def test_hour_budget_refuses_before_calling(settings):
+    settings.OPEN_METEO_LOCATIONS_PER_HOUR = 50
+    api = respx.get("https://api.open-meteo.com/v1/forecast").mock(side_effect=_hourly_response)
+    start = datetime.now(UTC) + timedelta(hours=1)
+    with pytest.raises(ProviderError) as exc:
+        OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(60)], start, start + timedelta(hours=2))
+    assert exc.value.unavailable
+    assert api.call_count == 0
+    # The refused request is not counted, so a smaller one still fits.
+    OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(40)], start, start + timedelta(hours=2))
+
+
+def _met_payload(t0, temp=5.0, hourly=60, six_hourly=10):
+    steps = []
+    for i in range(hourly):
+        steps.append(
+            {
+                "time": datetime.fromtimestamp(t0 + 3600 * i, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "data": {
+                    "instant": {"details": {"air_temperature": temp, "wind_speed": 10.0, "wind_speed_of_gust": 20.0}},
+                    "next_1_hours": {"details": {"precipitation_amount": 2.54}},
+                    "next_6_hours": {"details": {"precipitation_amount": 6.0}},
+                },
+            }
+        )
+    for j in range(six_hourly):
+        steps.append(
+            {
+                "time": datetime.fromtimestamp(t0 + 3600 * (hourly + 6 * j), UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "data": {
+                    "instant": {"details": {"air_temperature": temp, "wind_speed": 10.0}},
+                    "next_6_hours": {"details": {"precipitation_amount": 15.24}},
+                },
+            }
+        )
+    return {"properties": {"meta": {"units": {"wind_speed": "m/s"}}, "timeseries": steps}}
+
+
+def test_met_no_parses_units_six_hour_steps_and_snow():
+    start = datetime(2026, 10, 16, tzinfo=UTC)
+    t0 = int(start.timestamp())
+    warm = parse_forecast(_met_payload(t0), start, start + timedelta(hours=120))
+    assert warm.wind_mph[0] == pytest.approx(22.37, abs=0.01)
+    assert warm.gust_mph[0] == pytest.approx(44.74, abs=0.01)
+    assert warm.rain_in_hr[0] == pytest.approx(0.1)
+    assert warm.snow_in_hr[0] == 0
+    assert warm.rain_in_hr[-1] == pytest.approx(0.1)  # 6-hour total spread per hour
+    assert warm.gust_mph[-1] == warm.wind_mph[-1]  # no gust reported: fall back to sustained
+    cold = parse_forecast(_met_payload(t0, temp=-2.0), start, start + timedelta(hours=10))
+    assert cold.rain_in_hr[0] == 0
+    assert cold.snow_in_hr[0] == pytest.approx(0.7)  # 2.54 mm water -> 1.778 cm -> 0.7 in
+    assert len(cold.times) < 30  # trimmed to the requested window
+
+
+def _met_response(request):
+    t0 = int(datetime.now(UTC).replace(minute=0, second=0, microsecond=0).timestamp())
+    return httpx.Response(200, json=_met_payload(t0))
+
+
+@respx.mock
+def test_met_no_snaps_fetches_each_location_once_and_caches():
+    api = respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(side_effect=_met_response)
+    start = datetime.now(UTC) + timedelta(hours=1)
+    pts = [(41.01, -88.0), (41.05, -88.02), (42.0, -87.0)]
+    series = MetNoWeather().hourly(pts, start, start + timedelta(hours=10))
+    assert len(series) == 3
+    assert api.call_count == 2
+    assert "trucker" in api.calls.last.request.headers["User-Agent"]
+    MetNoWeather().hourly(pts, start, start + timedelta(hours=10))
+    assert api.call_count == 2
+
+
+@respx.mock
+def test_fallback_uses_met_no_when_open_meteo_is_out_of_quota():
+    om = respx.get("https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(429, json={"error": True, "reason": "Daily API request limit exceeded"})
+    )
+    met = respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(side_effect=_met_response)
+    start = datetime.now(UTC) + timedelta(hours=1)
+    series = FallbackWeather().hourly([(32.8, -96.8)], start, start + timedelta(hours=10))
+    assert series[0].wind_mph[0] > 0
+    assert (om.call_count, met.call_count) == (1, 1)
+    # Open-Meteo rests until its quota resets instead of being asked again on every trip.
+    FallbackWeather().hourly([(33.8, -84.4)], start, start + timedelta(hours=10))
+    assert (om.call_count, met.call_count) == (1, 2)
+
+
+@respx.mock
+def test_fallback_does_not_mask_bad_input():
+    start = datetime.now(UTC) + timedelta(days=20)
+    met = respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(side_effect=_met_response)
+    with pytest.raises(ProviderError) as exc:
+        FallbackWeather().hourly([(41, -88)], start, start + timedelta(hours=1))
+    assert exc.value.status == 400
+    assert met.call_count == 0
+
+
+@respx.mock
+def test_fallback_reports_the_first_error_when_every_source_fails():
+    respx.get("https://api.open-meteo.com/v1/forecast").mock(return_value=httpx.Response(429, json={}))
+    respx.get("https://api.met.no/weatherapi/locationforecast/2.0/complete").mock(return_value=httpx.Response(503))
+    start = datetime.now(UTC) + timedelta(hours=1)
+    with pytest.raises(ProviderError) as exc:
+        FallbackWeather().hourly([(41, -88)], start, start + timedelta(hours=1))
+    assert "Open-Meteo" in str(exc.value)

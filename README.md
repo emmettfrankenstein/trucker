@@ -24,6 +24,7 @@ flowchart LR
   S --> P[providers/*<br/>adapters]
   P --> TT[TomTom<br/>truck routing + search]
   P --> OM[Open-Meteo<br/>hourly forecast]
+  P -. backup .-> MET[MET Norway<br/>forecast]
   P <--> R[(Redis cache)]
   S <--> DB[(PostgreSQL)]
 ```
@@ -45,7 +46,8 @@ The backend has three layers, and each one only depends on the layer below it:
    - **Staying inside the free tier.** Open-Meteo's free tier counts every location as one call and allows about 600 calls a minute.
    - Lookups snap to a 0.1° lattice, which is about the forecast models' own resolution, so routes that share a road share a lookup.
    - For very long trips the lattice coarsens until one plan needs at most 300 locations; for example, Anchorage → Montreal at 10-mile spacing.
-   - A shared per-minute budget refuses a request up front with a clear "try again in a minute" message rather than spending quota on calls that would be refused.
+   - Shared minute, hour and day budgets (580 / 4,800 / 9,500 locations) refuse a request up front rather than spending quota on calls that would be refused.
+   - **Backup source.** Open-Meteo counts its free quota per IP, and Render's outbound IPs are shared with other apps, so the quota can run out without this app using it. When Open-Meteo refuses, weather comes from [MET Norway](https://api.met.no/) instead (free, keyless, limited per app rather than per IP), and Open-Meteo is skipped until its quota resets (`providers/fallback.py`). MET Norway doesn't split rain from snow, so precipitation at or below 1 °C counts as snow.
    - Setting `OPEN_METEO_API_KEY` switches to the paid endpoint and removes these limits.
 4. **Risk.** Each checkpoint is classified by the table-driven rules (`domain/risk.py`) and gets human-readable reasons.
 5. **Recommendation.** Routes are sorted on `(No Travel miles, Severe miles, High miles, avg risk, duration)`. The response includes a sentence explaining the choice (`domain/recommend.py`).
@@ -132,7 +134,7 @@ Demo account: `python manage.py ensure_demo_user --password <choose one>`
 See [docs/TESTING.md](docs/TESTING.md) for the requirement-to-test map and the live checklist.
 
 ```bash
-cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 109 tests, ~97% coverage
+cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 116 tests, ~97% coverage
 cd frontend && npm test && npm run lint && npm run format:check && npm run e2e   # e2e uses fake providers
 ```
 
@@ -171,7 +173,7 @@ backend/
     services.py      plan_trip(), build_heatmap()
     models.py        Trip → Route → Checkpoint
     serializers.py · views.py · urls.py · admin.py
-  providers/         base.py (protocols) · tomtom.py · openmeteo.py · http.py
+  providers/         base.py (protocols) · tomtom.py · openmeteo.py · metno.py · fallback.py · http.py
   tests/             unit, adapter and API tests, fakes, fixtures
 frontend/
   src/api            axios client (JWT refresh, one request at a time), endpoints

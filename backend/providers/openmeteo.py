@@ -68,24 +68,40 @@ def _window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
     return start_h, start_h + days * timedelta(days=1)
 
 
+def _budgets(now: datetime) -> list[tuple[str, int, int, int]]:
+    """(cache key, limit, key lifetime, seconds until reset) for each free-tier window."""
+    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    next_day = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return [
+        (f"om:budget:m:{now:%Y%m%d%H%M}", settings.OPEN_METEO_LOCATIONS_PER_MINUTE, 120, 60 - now.second),
+        (f"om:budget:h:{now:%Y%m%d%H}", settings.OPEN_METEO_LOCATIONS_PER_HOUR, 7200, (next_hour - now).seconds),
+        (f"om:budget:d:{now:%Y%m%d}", settings.OPEN_METEO_LOCATIONS_PER_DAY, 2 * 86400, (next_day - now).seconds),
+    ]
+
+
 def _reserve_budget(count: int) -> None:
-    """Count locations against the shared per-minute budget, or refuse up front."""
-    limit = settings.OPEN_METEO_LOCATIONS_PER_MINUTE
-    if settings.OPEN_METEO_API_KEY or count == 0 or not limit:
+    """Count locations against the shared minute, hour and day budgets, or refuse up front."""
+    if settings.OPEN_METEO_API_KEY or count == 0:
         return
-    key = f"om:budget:{datetime.now(UTC):%Y%m%d%H%M}"
-    cache.add(key, 0, timeout=120)
-    try:
-        used = cache.incr(key, count)
-    except ValueError:  # key evicted between add and incr
-        cache.set(key, count, timeout=120)
-        used = count
-    if used > limit:
-        cache.decr(key, count)
-        raise ProviderError(
-            "The free weather service is at its per-minute limit. Please try again in about a minute.",
-            status=503,
-        )
+    taken: list[str] = []
+    for key, limit, ttl, resets_in in _budgets(datetime.now(UTC)):
+        if not limit:
+            continue
+        cache.add(key, 0, timeout=ttl)
+        try:
+            used = cache.incr(key, count)
+        except ValueError:  # key evicted between add and incr
+            cache.set(key, count, timeout=ttl)
+            used = count
+        taken.append(key)
+        if used > limit:
+            for k in taken:
+                cache.decr(k, count)
+            raise ProviderError(
+                "The free weather service is at its usage limit. Please try again in about a minute.",
+                status=503,
+                retry_after=max(resets_in, 1),
+            )
 
 
 def _convert(values: list, unit: str) -> list[float]:

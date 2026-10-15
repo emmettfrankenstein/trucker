@@ -149,13 +149,23 @@ HEATMAP_MAX_CELLS = env.int("HEATMAP_MAX_CELLS", default=250)
 # are requested back to back, so their per-request caps together stay under that.
 OPEN_METEO_API_KEY = env("OPEN_METEO_API_KEY", default="")
 OPEN_METEO_LOCATIONS_PER_MINUTE = env.int("OPEN_METEO_LOCATIONS_PER_MINUTE", default=580)
+OPEN_METEO_LOCATIONS_PER_HOUR = env.int("OPEN_METEO_LOCATIONS_PER_HOUR", default=4800)
+OPEN_METEO_LOCATIONS_PER_DAY = env.int("OPEN_METEO_LOCATIONS_PER_DAY", default=9500)
+# When Open-Meteo is out of quota (its free tier is counted per IP, and Render's outbound
+# IPs are shared), weather comes from the next provider in this list instead.
+WEATHER_PROVIDER_CHAIN = env.list(
+    "WEATHER_PROVIDER_CHAIN",
+    default=["providers.openmeteo.OpenMeteoWeather", "providers.metno.MetNoWeather"],
+)
+MET_NO_MAX_LOCATIONS = env.int("MET_NO_MAX_LOCATIONS", default=120)
+MET_NO_WORKERS = env.int("MET_NO_WORKERS", default=6)
 OPEN_METEO_MAX_LOCATIONS_PER_REQUEST = env.int("OPEN_METEO_MAX_LOCATIONS_PER_REQUEST", default=300)
 MAX_DEPARTURE_DAYS_AHEAD = 7
 
 PROVIDERS = {
     "routing": env("ROUTING_PROVIDER", default="providers.tomtom.TomTomRouting"),
     "geocoding": env("GEOCODING_PROVIDER", default="providers.tomtom.TomTomGeocoding"),
-    "weather": env("WEATHER_PROVIDER", default="providers.openmeteo.OpenMeteoWeather"),
+    "weather": env("WEATHER_PROVIDER", default="providers.fallback.FallbackWeather"),
 }
 
 if not DEBUG:

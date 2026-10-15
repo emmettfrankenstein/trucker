@@ -15,9 +15,15 @@ from trips.domain.weather import HourlySeries
 class ProviderError(Exception):
     """An upstream API failed or returned something we cannot use."""
 
-    def __init__(self, message: str, *, status: int = 502):
+    def __init__(self, message: str, *, status: int = 502, retry_after: int | None = None):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after  # seconds until a rate-limited service may work again
+
+    @property
+    def unavailable(self) -> bool:
+        """The service is down or out of quota, as opposed to rejecting this input."""
+        return self.status >= 500
 
 
 @dataclass(frozen=True)
