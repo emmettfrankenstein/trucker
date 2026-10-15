@@ -26,3 +26,8 @@ export async function planSample(page, name) {
   await page.waitForURL(/\/trips\/[0-9a-f-]{36}$/)
   await expect(page.getByText('Route A', { exact: true })).toBeVisible()
 }
+
+export async function openCheckpoints(page) {
+  await page.getByRole('button', { name: /checkpoints \(\d+\)/ }).click()
+  await expect(page.locator('tbody tr').first()).toBeVisible()
+}

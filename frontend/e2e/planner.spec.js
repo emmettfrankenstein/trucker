@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { collectErrors, planSample, stubBasemap } from './helpers'
+import { collectErrors, openCheckpoints, planSample, stubBasemap } from './helpers'
 
 test.beforeEach(async ({ page }) => stubBasemap(page))
 
@@ -8,6 +8,8 @@ test('flags an unsafe departure when every route crosses No Travel weather', asy
   await page.goto('/')
   await planSample(page, 'Chicago → Minneapolis') // the fake storm covers this corridor
   await expect(page.getByText('No route is safe at this departure time')).toBeVisible()
+  await expect(page.getByRole('button', { name: /checkpoints \(\d+\)/ })).toContainText('No Travel')
+  await openCheckpoints(page)
   await expect(page.locator('tbody tr').first()).toContainText('No Travel')
 })
 
@@ -16,6 +18,7 @@ test('selecting a route card swaps the checkpoint table; a row opens a popup', a
   await planSample(page, 'Dallas → Atlanta')
   await page.getByText('Route C', { exact: true }).click()
   await expect(page.getByText(/Route C checkpoints/)).toBeVisible()
+  await openCheckpoints(page)
   await page.locator('tbody tr').nth(2).click()
   await expect(page.locator('.maplibregl-popup')).toContainText('Route C · mile')
 })

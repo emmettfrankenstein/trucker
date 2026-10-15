@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { collectErrors, planSample, stubBasemap } from './helpers'
+import { collectErrors, openCheckpoints, planSample, stubBasemap } from './helpers'
 
 test.beforeEach(async ({ page }) => stubBasemap(page))
 
@@ -17,7 +17,9 @@ test('plans a trip end to end: routes, recommendation, checkpoints, heatmap', as
   await expect(page.getByText(/is recommended:/)).toBeVisible()
 
   // Checkpoints table with ETAs and risk levels.
-  await expect(page.getByText(/checkpoints \(\d+\)/)).toBeVisible()
+  // Checkpoint table starts collapsed, then opens with ETAs and risk levels.
+  await expect(page.locator('tbody tr')).toHaveCount(0)
+  await openCheckpoints(page)
   await expect(page.locator('tbody tr').first()).toContainText('Low')
 
   // Heatmap loads and the slider moves the clock without errors.
