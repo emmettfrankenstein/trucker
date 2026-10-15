@@ -2,6 +2,7 @@ import PauseIcon from '@mui/icons-material/Pause'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import {
   Box,
+  Button,
   FormControlLabel,
   IconButton,
   LinearProgress,
@@ -40,6 +41,7 @@ function Legend({ metric }) {
 
 function HeatmapControls({
   heatmap,
+  onRetry,
   loading,
   error,
   hour,
@@ -86,9 +88,14 @@ function HeatmapControls({
       </Stack>
       {loading && <LinearProgress sx={{ my: 1 }} />}
       {error && (
-        <Typography variant="caption" color="error">
-          Couldn&apos;t load the forecast grid. Routes and checkpoints are unaffected.
-        </Typography>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 0.5 }}>
+          <Typography variant="caption" color="error" sx={{ flex: 1 }}>
+            {error} Routes and checkpoints are unaffected.
+          </Typography>
+          <Button size="small" onClick={onRetry}>
+            Retry
+          </Button>
+        </Stack>
       )}
       {heatmap && (
         <>

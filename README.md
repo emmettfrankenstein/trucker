@@ -42,6 +42,11 @@ The backend has three layers, and each one only depends on the layer below it:
 1. **Routes.** One TomTom call (`travelMode=truck`, `vehicleWeight`, `maxAlternatives=2`). TomTom sometimes returns fewer than 3 routes, especially on short trips. When it does, the backend pushes via-points out to either side of the main route and requests detours through them, in parallel. It drops any detour that overlaps an existing route by 85% or more, or that takes 60% longer than the fastest route (`domain/alternatives.py`).
 2. **Checkpoints.** One is placed every N miles plus the destination. ETAs are interpolated on TomTom's own turn-by-turn **distance-to-time pairs**, not an average speed, so slow city stretches get realistic arrival times (`domain/sampling.py`).
 3. **Weather.** All checkpoints on all routes go to Open-Meteo in **one batched request**, cached per location for 30 minutes. Each value is linearly interpolated between the two forecast hours either side of the ETA.
+   - **Staying inside the free tier.** Open-Meteo's free tier counts every location as one call and allows about 600 calls a minute.
+   - Lookups snap to a 0.1° lattice, which is about the forecast models' own resolution, so routes that share a road share a lookup.
+   - For very long trips the lattice coarsens until one plan needs at most 300 locations; for example, Anchorage → Montreal at 10-mile spacing.
+   - A shared per-minute budget refuses a request up front with a clear "try again in a minute" message rather than spending quota on calls that would be refused.
+   - Setting `OPEN_METEO_API_KEY` switches to the paid endpoint and removes these limits.
 4. **Risk.** Each checkpoint is classified by the table-driven rules (`domain/risk.py`) and gets human-readable reasons.
 5. **Recommendation.** Routes are sorted on `(No Travel miles, Severe miles, High miles, avg risk, duration)`. The response includes a sentence explaining the choice (`domain/recommend.py`).
 6. **Saving.** The trip, its routes and checkpoints are saved in one transaction with `bulk_create`. The detail endpoint prefetches everything, so loading a trip takes **3 queries regardless of size** (a test enforces this).
@@ -50,7 +55,7 @@ The backend has three layers, and each one only depends on the layer below it:
 
 The heatmap and the map make up 40% of the grade, so the slider is built never to wait on the network:
 
-- `GET /api/trips/<id>/heatmap/` builds a grid of cells covering the area within 30 miles of every route. It picks the finest cell size that keeps the grid under 450 cells. It then fetches all **49 hourly frames** in batched Open-Meteo requests and stores the result on the trip.
+- `GET /api/trips/<id>/heatmap/` builds a grid of cells covering the area within 30 miles of every route. It picks the finest cell size that keeps the grid under 250 cells. It then fetches all **49 hourly frames** in batched Open-Meteo requests and stores the result on the trip.
 - The data comes back as **columnar arrays** (`frames[metric][hour][cell]`) and is fetched **once per trip**. Routes are fetched separately, so they draw before the heatmap arrives.
 - The cells are a single GeoJSON layer in MapLibre with numeric feature ids. Moving the slider only calls `setFeatureState` with that hour's values, so the GPU recolours the cells. There is **no network request, no re-tiling, and no React re-render of the map**. The play button runs through the hours with the same mechanism.
 - A truck marker shows where the selected route's truck is at the chosen hour, interpolated between checkpoint ETAs.

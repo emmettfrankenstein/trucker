@@ -128,7 +128,7 @@ def test_heatmap_has_49_hourly_frames_and_is_stored(api):
     hm = resp.data
     assert hm["hours"] == 48
     n = len(hm["cells"])
-    assert 0 < n <= 450
+    assert 0 < n <= 250
     for metric in ("risk", "wind", "rain", "snow"):
         assert len(hm["frames"][metric]) == 49
         assert all(len(row) == n for row in hm["frames"][metric])

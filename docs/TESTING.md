@@ -53,9 +53,12 @@ Open the API health check first, because the free server takes about a minute to
 | L16 | Auth | Sign up, plan, reload, sign out, sign in, check history; open your trip link in a private window | History persists. The signed-in trip is private (404 when signed out); anonymous trip links are shareable |
 | L17 | Session expiry | Stay signed in for more than 30 minutes, then plan | Still works: the token refreshes silently |
 | L18 | Rate limit | Plan more than 30 trips in an hour | A clear "too many requests" message |
+| L18b | Weather quota | Plan Anchorage → Montreal at 10 mi, then plan two more long trips within the same minute | The first succeeds (with a coarser weather lattice). A later one may show "try again in about a minute"; it should never show a raw Open-Meteo error |
 | L19 | Devices | Phone (portrait), tablet, Chrome, Firefox, Safari | Layout fits; the map and controls are usable |
 
 ## 4. Known limitations
+
+- The free Open-Meteo tier allows about 600 locations a minute and 10,000 a day. Very long trips use a coarser weather lattice, cached locations are free, and a paid key (`OPEN_METEO_API_KEY`) removes the limits.
 
 - The heatmap covers 48 hours from departure. On a trip longer than that, checkpoints still get their own ETA forecasts, but the slider stops at +48 h.
 - Forecasts are limited to 7 days ahead, and departures are checked against that.

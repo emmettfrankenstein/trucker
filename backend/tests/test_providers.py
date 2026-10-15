@@ -5,9 +5,10 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from django.core.cache import cache
 
 from providers.base import ProviderError
-from providers.openmeteo import OpenMeteoWeather, parse_location
+from providers.openmeteo import OpenMeteoWeather, _window, choose_lattice, parse_location
 from providers.tomtom import TomTomGeocoding, TomTomRouting, parse_places, parse_routes
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,7 +21,9 @@ def load(name):
 @pytest.fixture(autouse=True)
 def _settings(settings):
     settings.TOMTOM_API_KEY = "test-key"
+    settings.OPEN_METEO_API_KEY = ""
     settings.CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+    cache.clear()
 
 
 def test_parse_routes_reads_geometry_summary_and_guidance_anchors():
@@ -124,7 +127,7 @@ def test_weather_batches_locations_and_caches_them():
     assert series[0] is series[2]
     assert series[1].wind_mph[0] == 40
     params = api.calls.last.request.url.params
-    assert params["latitude"] == "41.00,42.00"
+    assert params["latitude"] == "41.000,42.000"
     assert params["wind_speed_unit"] == "mph"
 
     OpenMeteoWeather().hourly(pts, start, start + timedelta(hours=2))
@@ -135,3 +138,77 @@ def test_weather_rejects_trips_beyond_forecast_horizon():
     start = datetime.now(UTC) + timedelta(days=20)
     with pytest.raises(ProviderError):
         OpenMeteoWeather().hourly([(41, -88)], start, start + timedelta(hours=1))
+
+
+def _hourly_response(request):
+    lats = request.url.params["latitude"].split(",")
+    t0 = int(datetime.fromisoformat(request.url.params["start_hour"]).replace(tzinfo=UTC).timestamp())
+    return httpx.Response(200, json=[_om_item(t0, hours=60) for _ in lats])
+
+
+def test_window_is_whole_days_of_at_least_49_hours():
+    start = datetime(2026, 10, 16, 10, 30, tzinfo=UTC)
+    s, e = _window(start, start + timedelta(hours=3))
+    assert s == datetime(2026, 10, 16, 10, tzinfo=UTC)
+    assert e - s == timedelta(days=3)
+    s2, e2 = _window(start, start + timedelta(hours=48))
+    assert (s2, e2) == (s, e)  # trip and its 0-48 h heatmap share one window (and cache)
+
+
+def test_lattice_coarsens_for_long_trips():
+    short = [(40.0, -100.0 + i * 0.15) for i in range(100)]
+    long = [(40.0 + (i % 7) * 0.05, -125.0 + i * 0.03) for i in range(2000)]
+    assert choose_lattice(short, 300) == 0.1
+    assert choose_lattice(long, 300) > 0.1
+    assert (
+        len({(round(p[0] / choose_lattice(long, 300)), round(p[1] / choose_lattice(long, 300))) for p in long}) <= 300
+    )
+
+
+@respx.mock
+def test_long_trip_stays_within_one_request_budget(settings):
+    settings.OPEN_METEO_MAX_LOCATIONS_PER_REQUEST = 300
+    api = respx.get("https://api.open-meteo.com/v1/forecast").mock(side_effect=_hourly_response)
+    pts = [(45.0 + (i % 5) * 0.02, -125.0 + i * 0.05) for i in range(1300)]  # ~3,400 mi at 10 mi
+    start = datetime.now(UTC) + timedelta(hours=1)
+    series = OpenMeteoWeather().hourly(pts, start, start + timedelta(hours=60))
+    assert len(series) == len(pts)
+    sent = sum(len(c.request.url.params["latitude"].split(",")) for c in api.calls)
+    assert sent <= 300
+
+
+@respx.mock
+def test_minute_budget_refuses_before_calling(settings):
+    settings.OPEN_METEO_LOCATIONS_PER_MINUTE = 150
+    api = respx.get("https://api.open-meteo.com/v1/forecast").mock(side_effect=_hourly_response)
+    start = datetime.now(UTC) + timedelta(hours=1)
+    OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(100)], start, start + timedelta(hours=2))
+    with pytest.raises(ProviderError) as exc:
+        OpenMeteoWeather().hourly([(41.0, -100.0 + i) for i in range(100)], start, start + timedelta(hours=2))
+    assert exc.value.status == 503
+    assert "per-minute limit" in str(exc.value)
+    assert api.call_count == 1
+    # Cached locations cost nothing, so repeating the first trip still works.
+    OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(100)], start, start + timedelta(hours=2))
+
+
+@respx.mock
+def test_upstream_429_becomes_a_friendly_503():
+    respx.get("https://api.open-meteo.com/v1/forecast").mock(
+        return_value=httpx.Response(429, json={"reason": "Minutely API request limit exceeded"})
+    )
+    start = datetime.now(UTC) + timedelta(hours=1)
+    with pytest.raises(ProviderError) as exc:
+        OpenMeteoWeather().hourly([(40.0, -100.0)], start, start + timedelta(hours=2))
+    assert exc.value.status == 503
+    assert "try again in about a minute" in str(exc.value)
+
+
+@respx.mock
+def test_api_key_uses_commercial_endpoint_without_budget(settings):
+    settings.OPEN_METEO_API_KEY = "paid"
+    settings.OPEN_METEO_LOCATIONS_PER_MINUTE = 1
+    api = respx.get("https://customer-api.open-meteo.com/v1/forecast").mock(side_effect=_hourly_response)
+    start = datetime.now(UTC) + timedelta(hours=1)
+    OpenMeteoWeather().hourly([(40.0, -100.0 + i) for i in range(5)], start, start + timedelta(hours=2))
+    assert api.calls.last.request.url.params["apikey"] == "paid"

@@ -1,8 +1,16 @@
-"""Open-Meteo hourly forecast adapter (no API key needed).
+"""Open-Meteo hourly forecast adapter.
 
 Docs: https://open-meteo.com/en/docs
 Many coordinates go in one request (comma-separated), so a whole route's checkpoints
 or a heatmap grid costs a handful of HTTP calls. Each location's series is cached.
+
+The free tier counts every location as one call and allows about 600 a minute, so we:
+  * snap lookups to a lattice (0.1° by default, about the forecast models' resolution)
+    so overlapping routes and the heatmap share locations;
+  * coarsen that lattice for very long trips so one request stays within budget;
+  * keep a shared per-minute budget (in the cache, so it spans workers) and fail fast
+    with a clear message instead of burning quota on a request that will be refused.
+Setting OPEN_METEO_API_KEY switches to the commercial endpoint, which removes the limits.
 """
 
 from __future__ import annotations
@@ -20,9 +28,12 @@ from .base import ProviderError
 from .http import get_json
 
 URL = "https://api.open-meteo.com/v1/forecast"
+CUSTOMER_URL = "https://customer-api.open-meteo.com/v1/forecast"
 HOURLY = "wind_speed_10m,wind_gusts_10m,rain,showers,snowfall"
 CHUNK = 100  # locations per request; keeps URLs well under length limits
 MAX_HORIZON = timedelta(days=15)
+LATTICES_DEG = (0.1, 0.15, 0.2, 0.25, 0.35, 0.5)
+MIN_WINDOW = timedelta(hours=49)
 
 KMH_TO_MPH = 0.621371
 MM_TO_IN = 1 / 25.4
@@ -33,10 +44,48 @@ def _hour_floor(dt: datetime) -> datetime:
     return dt.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
 
 
-def _round(p: LatLon) -> LatLon:
-    # 0.01° (~1 km) is finer than the forecast models' grid, and lets nearby
-    # checkpoints from different routes share a cache entry.
-    return (round(p[0], 2), round(p[1], 2))
+def _snap(p: LatLon, step: float) -> LatLon:
+    return (round(round(p[0] / step) * step, 3), round(round(p[1] / step) * step, 3))
+
+
+def choose_lattice(points: Sequence[LatLon], max_locations: int) -> float:
+    """Finest lattice whose unique snapped locations fit in one request's budget."""
+    for step in LATTICES_DEG:
+        if len({_snap(p, step) for p in points}) <= max_locations:
+            return step
+    return LATTICES_DEG[-1]
+
+
+def _window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
+    """Hour-aligned window, padded to whole days of at least 49 h.
+
+    Standard windows mean a trip's checkpoints and its 0-48 h heatmap ask for the same
+    time span, so any shared location is fetched once and served from cache after.
+    """
+    start_h = _hour_floor(start)
+    needed = max(_hour_floor(end) + timedelta(hours=1) - start_h, MIN_WINDOW)
+    days = -(-needed // timedelta(days=1))
+    return start_h, start_h + days * timedelta(days=1)
+
+
+def _reserve_budget(count: int) -> None:
+    """Count locations against the shared per-minute budget, or refuse up front."""
+    limit = settings.OPEN_METEO_LOCATIONS_PER_MINUTE
+    if settings.OPEN_METEO_API_KEY or count == 0 or not limit:
+        return
+    key = f"om:budget:{datetime.now(UTC):%Y%m%d%H%M}"
+    cache.add(key, 0, timeout=120)
+    try:
+        used = cache.incr(key, count)
+    except ValueError:  # key evicted between add and incr
+        cache.set(key, count, timeout=120)
+        used = count
+    if used > limit:
+        cache.decr(key, count)
+        raise ProviderError(
+            "The free weather service is at its per-minute limit. Please try again in about a minute.",
+            status=503,
+        )
 
 
 def _convert(values: list, unit: str) -> list[float]:
@@ -59,15 +108,15 @@ def parse_location(item: dict) -> HourlySeries:
 
 class OpenMeteoWeather:
     def hourly(self, points: Sequence[LatLon], start: datetime, end: datetime) -> list[HourlySeries]:
-        start_h = _hour_floor(start)
-        end_h = _hour_floor(end) + timedelta(hours=1)
+        start_h, end_h = _window(start, end)
         if end_h - _hour_floor(datetime.now(UTC)) > MAX_HORIZON:
             raise ProviderError("Trip extends beyond the 15-day weather forecast horizon", status=400)
 
+        step = choose_lattice(points, settings.OPEN_METEO_MAX_LOCATIONS_PER_REQUEST)
         window = f"{start_h:%Y%m%d%H}-{end_h:%Y%m%d%H}"
-        rounded = [_round(p) for p in points]
-        unique = list(dict.fromkeys(rounded))
-        keys = {p: f"om:{p[0]:.2f}:{p[1]:.2f}:{window}" for p in unique}
+        snapped = [_snap(p, step) for p in points]
+        unique = list(dict.fromkeys(snapped))
+        keys = {p: f"om:{p[0]:.3f}:{p[1]:.3f}:{window}" for p in unique}
         found: dict[LatLon, HourlySeries] = {}
         cached = cache.get_many(list(keys.values()))
         for p, k in keys.items():
@@ -75,11 +124,15 @@ class OpenMeteoWeather:
                 found[p] = cached[k]
 
         missing = [p for p in unique if p not in found]
+        _reserve_budget(len(missing))
+        url, extra = (
+            (CUSTOMER_URL, {"apikey": settings.OPEN_METEO_API_KEY}) if settings.OPEN_METEO_API_KEY else (URL, {})
+        )
         for i in range(0, len(missing), CHUNK):
             chunk = missing[i : i + CHUNK]
             params = {
-                "latitude": ",".join(f"{p[0]:.2f}" for p in chunk),
-                "longitude": ",".join(f"{p[1]:.2f}" for p in chunk),
+                "latitude": ",".join(f"{p[0]:.3f}" for p in chunk),
+                "longitude": ",".join(f"{p[1]:.3f}" for p in chunk),
                 "hourly": HOURLY,
                 "wind_speed_unit": "mph",
                 "precipitation_unit": "inch",
@@ -87,8 +140,9 @@ class OpenMeteoWeather:
                 "timeformat": "unixtime",
                 "start_hour": f"{start_h:%Y-%m-%dT%H:%M}",
                 "end_hour": f"{end_h:%Y-%m-%dT%H:%M}",
+                **extra,
             }
-            payload = get_json(URL, params, service="Open-Meteo")
+            payload = get_json(url, params, service="Open-Meteo")
             items = payload if isinstance(payload, list) else [payload]
             if len(items) != len(chunk):
                 raise ProviderError("Open-Meteo returned an unexpected number of locations")
@@ -98,4 +152,4 @@ class OpenMeteoWeather:
                 fresh[keys[p]] = found[p]
             cache.set_many(fresh, timeout=settings.WEATHER_CACHE_SECONDS)
 
-        return [found[p] for p in rounded]
+        return [found[p] for p in snapped]

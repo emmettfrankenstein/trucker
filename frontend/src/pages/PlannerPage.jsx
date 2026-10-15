@@ -47,7 +47,7 @@ export default function PlannerPage() {
     queryFn: () => getHeatmap(tripId),
     enabled: Boolean(trip),
     staleTime: Infinity,
-    retry: 1,
+    retry: false, // a rate-limited retry would only burn more weather quota; the user can press Retry
   })
 
   const plan = useMutation({
@@ -208,7 +208,8 @@ export default function PlannerPage() {
             <HeatmapControls
               heatmap={heatmap}
               loading={heatmapQuery.isLoading}
-              error={heatmapQuery.isError}
+              error={heatmapQuery.isError ? errorMessage(heatmapQuery.error) : null}
+              onRetry={() => heatmapQuery.refetch()}
               hour={hour}
               onHour={setHour}
               metric={metric}

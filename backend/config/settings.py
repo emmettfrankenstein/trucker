@@ -144,7 +144,12 @@ GEOCODE_CACHE_SECONDS = env.int("GEOCODE_CACHE_SECONDS", default=24 * 3600)
 RISK_WIND_FIELD = env("RISK_WIND_FIELD", default="sustained")
 HEATMAP_HOURS = 48
 HEATMAP_BUFFER_MI = env.float("HEATMAP_BUFFER_MI", default=30.0)
-HEATMAP_MAX_CELLS = env.int("HEATMAP_MAX_CELLS", default=450)
+HEATMAP_MAX_CELLS = env.int("HEATMAP_MAX_CELLS", default=250)
+# Open-Meteo's free tier allows ~600 locations/minute. A trip's checkpoints and its heatmap
+# are requested back to back, so their per-request caps together stay under that.
+OPEN_METEO_API_KEY = env("OPEN_METEO_API_KEY", default="")
+OPEN_METEO_LOCATIONS_PER_MINUTE = env.int("OPEN_METEO_LOCATIONS_PER_MINUTE", default=580)
+OPEN_METEO_MAX_LOCATIONS_PER_REQUEST = env.int("OPEN_METEO_MAX_LOCATIONS_PER_REQUEST", default=300)
 MAX_DEPARTURE_DAYS_AHEAD = 7
 
 PROVIDERS = {

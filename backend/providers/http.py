@@ -36,7 +36,13 @@ def get_json(url: str, params: dict, *, service: str, retries: int = 2):
                 continue
             raise ProviderError(f"{service} is unreachable") from exc
         logger.info("%s %s %.0fms", service, resp.status_code, (time.monotonic() - started) * 1000)
-        if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries:
+        if resp.status_code == 429:
+            # Quotas reset per minute or longer; an immediate retry only wastes a call.
+            raise ProviderError(
+                f"{service} is rate-limiting requests right now. Please try again in about a minute.",
+                status=503,
+            )
+        if resp.status_code in (500, 502, 503, 504) and attempt < retries:
             time.sleep(0.5 * 2**attempt)
             continue
         if resp.status_code >= 400:
