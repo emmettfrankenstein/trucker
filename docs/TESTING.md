@@ -22,7 +22,7 @@ This document covers how the app is tested: which assessment requirement each te
 
 | Layer | Command | What it covers |
 |---|---|---|
-| Backend unit + API | `cd backend && pytest --cov` | 103 tests, about 97% coverage. Domain rules, adapters (HTTP mocked with `respx`), API, auth, permissions, error format, query counts. |
+| Backend unit + API | `cd backend && pytest --cov` | 109 tests, about 97% coverage. Domain rules, adapters (HTTP mocked with `respx`), API, auth, permissions, error format, query counts. |
 | Frontend unit | `cd frontend && npm test` | Polyline decoding, route splitting, truck position, heatmap expressions, route card, error messages. |
 | End-to-end | `cd frontend && npm run e2e` | A real browser against the real Django API, with fake route and weather providers (`backend/tests/fakes.py`). Covers planning, the unsafe-trip banner, route switching, popups, heatmap play and toggle, reloading a trip link, validation, autocomplete, and sign up → history → delete → sign out. Also a smoke run at phone size. |
 | Static checks | `ruff`, `eslint`, `prettier --check`, `makemigrations --check` | Style, likely bugs, and missing migrations. |

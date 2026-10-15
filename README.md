@@ -132,7 +132,7 @@ Demo account: `python manage.py ensure_demo_user --password <choose one>`
 See [docs/TESTING.md](docs/TESTING.md) for the requirement-to-test map and the live checklist.
 
 ```bash
-cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 103 tests, ~97% coverage
+cd backend && pytest --cov=trips --cov=providers --cov=accounts   # 109 tests, ~97% coverage
 cd frontend && npm test && npm run lint && npm run format:check && npm run e2e   # e2e uses fake providers
 ```
 
@@ -154,7 +154,7 @@ Both hosts below have free plans.
 - **Frontend: Vercel.** Import the repo and set **Root Directory** to `frontend`. Set `VITE_API_URL` to the API's URL. `vercel.json` handles routing the single-page app and long-lived caching of built assets.
 - **API: Render.** Go to New → Blueprint and pick this repo. `render.yaml` creates the Docker web service, Postgres and Key Value (Redis). You'll be asked for `TOMTOM_API_KEY` and `CORS_ALLOWED_ORIGINS`; set the second to your Vercel URL.
 
-Render's free instances sleep when idle, so open the app once before sharing the link so the first visitor doesn't wait on a cold start.
+Render's free instances sleep after 15 idle minutes. `.github/workflows/keepalive.yml` pings `/api/health/` every 10 minutes so reviewers don't wait on a cold start; disable it when the review is over.
 
 Any Docker host works too. Every setting is an environment variable; see `.env.example`.
 
