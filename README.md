@@ -142,9 +142,14 @@ cd frontend && npm test && npm run lint && npm run format:check
 
 ## Deploying
 
-`render.yaml` is a Render Blueprint that sets up a Docker API service, managed Postgres, Redis-compatible Key Value, and a static frontend with SPA rewrites and long-lived asset caching. The only secret to supply is `TOMTOM_API_KEY`. The API runs on a paid plan because a free instance sleeps, and the first click would then wait through a cold start.
+Both hosts below have free plans.
 
-Any Docker host works the same way. The settings are all environment variables; see `.env.example`.
+- **Frontend: Vercel.** Import the repo and set **Root Directory** to `frontend`. Set `VITE_API_URL` to the API's URL. `vercel.json` handles routing the single-page app and long-lived caching of built assets.
+- **API: Render.** Go to New → Blueprint and pick this repo. `render.yaml` creates the Docker web service, Postgres and Key Value (Redis). You'll be asked for `TOMTOM_API_KEY` and `CORS_ALLOWED_ORIGINS`; set the second to your Vercel URL.
+
+Render's free instances sleep when idle, so open the app once before sharing the link so the first visitor doesn't wait on a cold start.
+
+Any Docker host works too. Every setting is an environment variable; see `.env.example`.
 
 ---
 
